@@ -67,13 +67,7 @@ subroutine confscript_head(vers)
   write (*,'(3x,a)') 'Online documentation is available at'
   write (*,'(3x,a)') 'https://crest-lab.github.io/crest-docs/'
   write (*,*)
-    
-  write (*,'(3x,a)') 'Parallel (OpenMP) version for Android (aarch64, pie)'
-  write (*,'(3x,a)') 'linked with high-performance BLAS and LAPACK libraries'
-  write (*,'(3x,a)') 'compiled by A. Liska & V. Ruzickova'
-  write (*,'(3x,a)') 'on September 30, 2024.'
-  write (*,*)
-  
+
   call disclaimer()
 end subroutine confscript_head
 

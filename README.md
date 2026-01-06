@@ -14,11 +14,16 @@ $ export PATH=$PATH:/path/to/include
 $ export CFLAGS="-fPIC -pie"
 $ export CXXFLAGS="-fPIC -pie"
 $ export FFLAGS="-fPIC -pie"
-$ export LDFLAGS="-fPIC -pie -static"
+$ export LDFLAGS="-fPIC -pie -static -Wl,-z,max-page-size=16384"
 $ export CC=/path/to/your/cross-compiler
 $ export CXX=/path/to/your/cross-compiler
 $ export FC=/path/to/your/cross-compiler
 $ cmake -B _build -DBLAS_LIBRARIES=/path/to/libblas.a -DLAPACK_LIBRARIES=/path/to/liblapack.a -DWITH_OpenMP=TRUE -DSTATICBUILD=true
+```
+
+Open all the link.txt files and add "-Wl,-z,max-page-size=16384" to the linker flags
+
+```bash
 $ make -C _build
 ```
 
