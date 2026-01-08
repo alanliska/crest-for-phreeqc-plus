@@ -60,6 +60,7 @@ subroutine trialMD_calculator(env)
   type(timer) :: profiler
 
   type(calcdata) :: tmpcalc
+  type(calcdata) :: calcstart
   real(wp) :: energy
   real(wp),allocatable :: grd(:,:)
   integer :: T,Tn
@@ -104,6 +105,7 @@ subroutine trialMD_calculator(env)
   MTD%mtdtype = cv_rmsd
   MTD%cvdump_fs = 550.0_wp
   call MDSTART%add(MTD)
+  calcstart = env%calc !> Save clean state before loop
 
   pr = .false. !> supress stdout printout of MD
 
@@ -121,6 +123,8 @@ subroutine trialMD_calculator(env)
 
 !>--- Restore initial starting geometry
     mol = molstart
+!>--- Restore clean calculation state
+    env%calc = calcstart
 !>--- Modify MD output trajectory
     MD = MDSTART
     MD%tstep = tstep
@@ -149,7 +153,8 @@ subroutine trialMD_calculator(env)
         write (stdout,'(1x,"Automatic MD restart failed ",i0," times!")') counter
         write (stdout,'(1x,"Please try other settings manually.")')
         write (stdout,*)
-        error stop
+        env%iostatus_meta = status_safety
+        return
       end if
       counter = counter+1
 
@@ -163,7 +168,9 @@ subroutine trialMD_calculator(env)
       else if (tstep <= 1.0d0.and.shakemode == 0) then
         write (stdout,'(1x,"Automatic MTD settings check failed!")')
         write (stdout,'(1x,"Please try other settings manually.")')
-        error stop
+        write (stdout,*)
+        env%iostatus_meta = status_safety
+        return
       end if
 
       !> don't reduce the timestep below 1 fs automatically
@@ -346,7 +353,7 @@ subroutine trialOPT_warning(env,mol,success)
     write (stdout,*)
     write (stdout,*) ' Initial geometry optimization failed!'
     write (stdout,*) ' Please check your input and, if present, crestopt.log.'
-    error stop
+    call creststop(status_failed)
   end if
   write (stdout,*) 'Geometry successfully optimized.'
 !---- if necessary, check if the topology has changed!
@@ -399,7 +406,7 @@ subroutine trialOPT_warning(env,mol,success)
         write (stdout,'(/,4x,a)') 'C) Fix the initial input geometry by introducing bond length constraints'
         write (stdout,'(4x,a)') '   or by using a method with fixed topology (e.g. GFN-FF).'
         write (stdout,*)
-        error stop 'safety termination of CREST'
+        call creststop(status_safety)
       end if
     end if
   end if

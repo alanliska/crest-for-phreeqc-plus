@@ -17,9 +17,9 @@
 project(
   'tblite',
   'fortran',
-  version: '0.3.0',
+  version: '0.5.0',
   license: 'LGPL-3.0-or-later',
-  meson_version: '>=0.57.2',
+  meson_version: '>=0.57.2,!=1.8.0',
   default_options: [
     'buildtype=debugoptimized',
     'default_library=both',
@@ -45,6 +45,7 @@ tblite_lib = library(
   dependencies: lib_deps,
   include_directories: inc_dirs,
   install: install,
+  link_language: 'fortran',
 )
 
 # Export dependency for other projects and test suite

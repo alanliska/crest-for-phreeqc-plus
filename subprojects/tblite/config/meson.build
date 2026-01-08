@@ -26,9 +26,17 @@ if fc_id == 'gcc'
   add_project_arguments(
     '-ffree-line-length-none',
     '-fbacktrace',
+    '-Wno-maybe-uninitialized',
     language: 'fortran',
   )
-elif fc_id == 'intel'
+  if fc.version().version_compare('<10')
+    message('tblite it not tested with GNU Fortran < 10, functionality might be impacted. The build automatically adds ‘-fno-range-check’ for compatibility. Please upgrade to a newer compiler version if possible.') 
+    add_project_arguments(
+      '-fno-range-check',
+      language: 'fortran',
+    )
+  endif
+elif fc_id == 'intel' or fc_id == 'intel-llvm'
   add_project_arguments(
     '-traceback',
     language: 'fortran',
@@ -49,14 +57,14 @@ endif
 
 lapack_vendor = get_option('lapack')
 if lapack_vendor == 'auto'
-  if fc_id == 'intel'
+  if fc_id == 'intel' or fc_id == 'intel-llvm'
     lapack_vendor = 'mkl'
   endif
 endif
 
 if lapack_vendor == 'mkl'
   mkl_dep = []
-  if fc_id == 'intel'
+  if fc_id == 'intel' or fc_id == 'intel-llvm'
     mkl_dep += cc.find_library('mkl_intel_lp64')
     if get_option('openmp')
       mkl_dep += cc.find_library('mkl_intel_thread')
@@ -76,37 +84,37 @@ if lapack_vendor == 'mkl'
   lib_deps += mkl_dep
   add_project_arguments(['-DWITH_MKL'], language: 'fortran')
 elif lapack_vendor == 'mkl-rt'
-  mkl_dep = fc.find_library('mkl_rt')
+  mkl_dep = cc.find_library('mkl_rt')
   lib_deps += mkl_dep
   add_project_arguments(['-DWITH_MKL'], language: 'fortran')
 elif lapack_vendor == 'openblas'
   openblas_dep = dependency('openblas', required: false)
   if not openblas_dep.found()
-    openblas_dep = fc.find_library('openblas')
+    openblas_dep = cc.find_library('openblas')
   endif
   lib_deps += openblas_dep
   if not fc.links('external dsytrs; call dsytrs(); end', dependencies: openblas_dep)
     lapack_dep = dependency('lapack', required: false)
     if not lapack_dep.found()
-      lapack_dep = fc.find_library('lapack')
+      lapack_dep = cc.find_library('lapack')
     endif
     lib_deps += lapack_dep
   endif
 
 elif lapack_vendor == 'custom'
   foreach lib: get_option('custom_libraries')
-    lib_deps += fc.find_library(lib)
+    lib_deps += cc.find_library(lib)
   endforeach
 
 else
   lapack_dep = dependency('lapack', required: false)
   if not lapack_dep.found()
-    lapack_dep = fc.find_library('lapack')
+    lapack_dep = cc.find_library('lapack')
   endif
   lib_deps += lapack_dep
   blas_dep = dependency('blas', required: false)
   if not blas_dep.found()
-    blas_dep = fc.find_library('blas')
+    blas_dep = cc.find_library('blas')
   endif
   lib_deps += blas_dep
 endif
@@ -123,7 +131,7 @@ lib_deps += mctc_dep
 # Create DFT-D4 library as subproject
 dftd4_dep = dependency(
   'dftd4',
-  version: '>=3.0.0',
+  version: ['>=3.4.0', '<4'],
   fallback: ['dftd4', 'dftd4_dep'],
   default_options: ['default_library=static', 'api=false', 'python=false'],
 )
@@ -132,6 +140,7 @@ lib_deps += dftd4_dep
 # Create DFT-D3 library as subproject
 sdftd3_dep = dependency(
   's-dftd3',
+  version: '>=0.6.0',
   fallback: ['s-dftd3', 'sdftd3_dep'],
   default_options: ['default_library=static', 'api=false', 'python=false'],
 )

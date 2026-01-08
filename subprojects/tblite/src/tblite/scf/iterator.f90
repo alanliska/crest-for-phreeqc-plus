@@ -25,7 +25,7 @@ module tblite_scf_iterator
    use tblite_container, only : container_cache, container_list
    use tblite_disp, only : dispersion_type
    use tblite_integral_type, only : integral_type
-   use tblite_wavefunction_type, only : wavefunction_type, get_density_matrix
+   use tblite_wavefunction_type, only : wavefunction_type
    use tblite_wavefunction_fermi, only : get_fermi_filling
    use tblite_wavefunction_mulliken, only : get_mulliken_shell_charges, &
       & get_mulliken_atomic_multipoles
@@ -37,13 +37,14 @@ module tblite_scf_iterator
    implicit none
    private
 
-   public :: next_scf, get_mixer_dimension, get_density, get_qat_from_qsh
+   public :: next_scf, get_mixer_dimension, get_electronic_energy, reduce
+   public :: next_density, get_qat_from_qsh
 
 contains
 
 !> Evaluate self-consistent iteration for the density-dependent Hamiltonian
 subroutine next_scf(iscf, mol, bas, wfn, solver, mixer, info, coulomb, dispersion, &
-      & interactions, ints, pot, cache, dcache, icache, &
+      & interactions, ints, pot, ccache, dcache, icache, &
       & energies, error)
    !> Current iteration count
    integer, intent(inout) :: iscf
@@ -71,11 +72,11 @@ subroutine next_scf(iscf, mol, bas, wfn, solver, mixer, info, coulomb, dispersio
    !> Density dependent potential shifts
    type(potential_type), intent(inout) :: pot
    !> Restart data for coulombic interactions
-   type(container_cache), intent(inout) :: cache
+   type(container_cache), intent(inout), optional :: ccache
    !> Restart data for dispersion interactions
-   type(container_cache), intent(inout) :: dcache
+   type(container_cache), intent(inout), optional :: dcache
    !> Restart data for interaction containers
-   type(container_cache), intent(inout) :: icache
+   type(container_cache), intent(inout), optional :: icache
 
    !> Self-consistent energy
    real(wp), intent(inout) :: energies(:)
@@ -94,20 +95,20 @@ subroutine next_scf(iscf, mol, bas, wfn, solver, mixer, info, coulomb, dispersio
 
    iscf = iscf + 1
    call pot%reset
-   if (present(coulomb)) then
-      call coulomb%get_potential(mol, cache, wfn, pot)
+   if (present(coulomb) .and. present(ccache)) then
+      call coulomb%get_potential(mol, ccache, wfn, pot)
    end if
-   if (present(dispersion)) then
+   if (present(dispersion) .and. present(dcache)) then
       call dispersion%get_potential(mol, dcache, wfn, pot)
    end if
-   if (present(interactions)) then
+   if (present(interactions) .and. present(icache)) then
       call interactions%get_potential(mol, icache, wfn, pot)
    end if
    call add_pot_to_h1(bas, ints, pot, wfn%coeff)
 
    call set_mixer(mixer, wfn, info)
 
-   call get_density(wfn, solver, ints, ts, error)
+   call next_density(wfn, solver, ints, ts, error)
    if (allocated(error)) return
 
    call get_mulliken_shell_charges(bas, ints%overlap, wfn%density, wfn%n0sh, &
@@ -126,13 +127,13 @@ subroutine next_scf(iscf, mol, bas, wfn, solver, mixer, info, coulomb, dispersio
 
    energies(:) = ts / size(energies)
    call reduce(energies, eao, bas%ao2at)
-   if (present(coulomb)) then
-      call coulomb%get_energy(mol, cache, wfn, energies)
+   if (present(coulomb) .and. present(ccache)) then
+      call coulomb%get_energy(mol, ccache, wfn, energies)
    end if
-   if (present(dispersion)) then
+   if (present(dispersion) .and. present(dcache)) then
       call dispersion%get_energy(mol, dcache, wfn, energies)
    end if
-   if (present(interactions)) then
+   if (present(interactions) .and. present(icache)) then
       call interactions%get_energy(mol, icache, wfn, energies)
    end if
 end subroutine next_scf
@@ -290,7 +291,7 @@ subroutine get_mixer(mixer, bas, wfn, info)
 end subroutine get_mixer
 
 
-subroutine get_density(wfn, solver, ints, ts, error)
+subroutine next_density(wfn, solver, ints, ts, error)
    !> Tight-binding wavefunction data
    type(wavefunction_type), intent(inout) :: wfn
    !> Solver for the general eigenvalue problem
@@ -306,37 +307,12 @@ subroutine get_density(wfn, solver, ints, ts, error)
    real(wp), allocatable :: focc(:)
    integer :: spin
 
-   select case(wfn%nspin)
-   case default
-      call solver%solve(wfn%coeff(:, :, 1), ints%overlap, wfn%emo(:, 1), error)
-      if (allocated(error)) return
-
-      allocate(focc(size(wfn%focc, 1)))
-      wfn%focc(:, :) = 0.0_wp
-      do spin = 1, 2
-         call get_fermi_filling(wfn%nel(spin), wfn%kt, wfn%emo(:, 1), &
-            & wfn%homo(spin), focc, e_fermi)
-         call get_electronic_entropy(focc, wfn%kt, stmp(spin))
-         wfn%focc(:, 1) = wfn%focc(:, 1) + focc
-      end do
-      ts = sum(stmp)
-
-      call get_density_matrix(wfn%focc(:, 1), wfn%coeff(:, :, 1), wfn%density(:, :, 1))
-   case(2)
-      wfn%coeff = 2*wfn%coeff
-      do spin = 1, 2
-         call solver%solve(wfn%coeff(:, :, spin), ints%overlap, wfn%emo(:, spin), error)
-         if (allocated(error)) return
-
-         call get_fermi_filling(wfn%nel(spin), wfn%kt, wfn%emo(:, spin), &
-            & wfn%homo(spin), wfn%focc(:, spin), e_fermi)
-         call get_electronic_entropy(wfn%focc(:, spin), wfn%kt, stmp(spin))
-         call get_density_matrix(wfn%focc(:, spin), wfn%coeff(:, :, spin), &
-            & wfn%density(:, :, spin))
-      end do
-      ts = sum(stmp)
-   end select
-end subroutine get_density
+   call solver%get_density(wfn%coeff, ints%overlap, wfn%emo, wfn%focc, wfn%density, error)
+   do spin = 1, 2
+      call get_electronic_entropy(wfn%focc(:, spin), wfn%kt, stmp(spin))
+   end do
+   ts = sum(stmp)
+end subroutine next_density
 
 subroutine get_electronic_entropy(occ, kt, s)
    real(wp), intent(in) :: occ(:)

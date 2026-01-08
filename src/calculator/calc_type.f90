@@ -25,7 +25,7 @@ module calc_type
   use tblite_api
   use gfn0_api
   use gfnff_api,only:gfnff_data
-  use xhcff_api,only:xhcff_calculator
+  use libpvol_api,only:libpvol_calculator
 !>--- other types
   use orca_type
   use lwoniom_module
@@ -47,7 +47,7 @@ module calc_type
     integer :: gfn0      = 7
     integer :: gfn0occ   = 8
     integer :: gfnff     = 9
-    integer :: xhcff     = 10
+    integer :: libpvol   = 10
     integer :: lj        = 11
   end type enum_jobtype
   type(enum_jobtype), parameter,public :: jobtype = enum_jobtype()
@@ -63,7 +63,7 @@ module calc_type
      & 'GFN0-xTB calculation via GFN0 lib           ', &
      & 'GFN0*-xTB calculation via GFN0 lib          ', &
      & 'GFN-FF calculation via GFNFF lib            ', &
-     & 'XHCFF calculation via XHCFF-lib             ', &
+     & 'external pressure calculation via libpvol   ', &
      & 'Lennard-Jones potential calculation         ' ]
 !&>
 
@@ -97,6 +97,8 @@ module calc_type
     character(len=:),allocatable :: shortflag   !> shorter job description
 
 !>--- gradient format specifications
+    logical :: numgrad = .false.      !> run numerical gradient (expensive!)
+    real(wp) :: gradstep = 0.0005_wp  !> displacement for numerical gradient
     logical :: rdgrad = .true.
     integer :: gradtype = 0
     integer :: gradfmt = 0
@@ -158,12 +160,14 @@ module calc_type
 !>--- GFN-FF data
     type(gfnff_data),allocatable :: ff_dat
 
-!>--- XHCFF data
-    integer :: ngrid = 230             !>  lebedev grid points per atom
-    real(wp) :: extpressure = 0.0_wp   !>  hydorstatic pressure in Gpa
-    real(wp) :: proberad = 1.5_wp      !>  proberadius in Angstroem
-    integer :: vdwset = 0              !>  Set of VDW radii to use in sas calculation -> default D3, 1 -> Bondi
-    type(xhcff_calculator),allocatable :: xhcff
+!>--- libpvol data
+    integer  :: pvmodel = 1            !> libpvol model type (0=XHCFF, 1=PV)
+    integer  :: ngrid = 1202           !> lebedev grid points per atom
+    real(wp) :: extpressure = 0.0_wp   !> hydorstatic pressure in Gpa
+    real(wp) :: proberad = 1.5_wp      !> proberadius in Angstroem
+    integer  :: vdwset = 0             !> Type of VDW radii -> 0 (default) D3, 1 -> Bondi
+    real(wp) :: pvradscal = 1.0_wp     !> Scaling factor for SAS radii
+    type(libpvol_calculator),allocatable :: libpvol
 
     !> ONIOM fragment IDs
     integer :: ONIOM_highlowroot = 0
@@ -352,7 +356,7 @@ contains  !>--- Module routines start here
         if(allocated(self%calcs(i)%tblite)) deallocate(self%calcs(i)%tblite)
         if(allocated(self%calcs(i)%g0calc)) deallocate(self%calcs(i)%g0calc)
         if(allocated(self%calcs(i)%ff_dat)) deallocate(self%calcs(i)%ff_dat)
-        if(allocated(self%calcs(i)%xhcff)) deallocate(self%calcs(i)%xhcff)
+        if(allocated(self%calcs(i)%libpvol)) deallocate(self%calcs(i)%libpvol)
       end do
     end if
   end subroutine calculation_deallocate_params
@@ -913,7 +917,7 @@ contains  !>--- Module routines start here
     if (allocated(self%tblite)) deallocate (self%tblite)
     if (allocated(self%g0calc)) deallocate (self%g0calc)
     if (allocated(self%ff_dat)) deallocate (self%ff_dat)
-    if (allocated(self%xhcff)) deallocate (self%xhcff)
+    if (allocated(self%libpvol)) deallocate (self%libpvol)
 
     self%id = 0
     self%prch = stdout
@@ -1039,8 +1043,8 @@ contains  !>--- Module routines start here
       self%shortflag =  'GFN0-xTB*'
     case( jobtype%gfnff )
       self%shortflag =  'GFN-FF'
-    case( jobtype%xhcff )
-      self%shortflag =  'XHCFF'
+    case( jobtype%libpvol )
+      self%shortflag =  'LIVPVOL'
     case( jobtype%lj )
       self%shortflag =  'LJ'
     case default
@@ -1089,6 +1093,9 @@ contains  !>--- Module routines start here
     character(len=*),parameter :: fmt3 = '(" :",2x,a20," : ",a)'
     character(len=*),parameter :: fmt4 = '(" :",1x,a)'
     character(len=20) :: atmp
+    logical :: gxtbwarn
+
+    gxtbwarn=.false.
 
     if (allocated(self%description)) then
       write (iunit,'(" :",1x,a)') trim(self%description)
@@ -1109,7 +1116,12 @@ contains  !>--- Module routines start here
     end if
     if (any((/jobtype%orca,jobtype%xtbsys,jobtype%turbomole, &
     &  jobtype%generic,jobtype%terachem/) == self%id)) then
-      write (iunit,'(" :",3x,a,a)') 'selected binary : ',trim(self%binary)
+      if(index(self%binary,'gxtb').ne.0)then
+        write(iunit,fmt4) 'g-xTB (development version)'
+        gxtbwarn = .true.
+      else  
+        write (iunit,'(" :",3x,a,a)') 'selected binary : ',trim(self%binary)
+      endif
     end if
     if (self%refine_lvl > 0) then
       write (atmp,*) 'refinement stage'
@@ -1167,6 +1179,11 @@ contains  !>--- Module routines start here
       endif
     end if
 
+    if(gxtbwarn)then
+       write(iunit,fmt4) 'WARNING: This currently is the development version of g-xTB.'
+       write(iunit,fmt4) 'WARNING: Gradients are NUMERICAL (i.e., expensive and noisy!)' 
+    endif
+
   end subroutine calculation_settings_info
 
 !=========================================================================================!
@@ -1197,6 +1214,15 @@ contains  !>--- Module routines start here
       self%id = jobtype%turbomole
       self%rdgrad = .false.
       self%binary = 'gp3'
+    case ('gxtb','gxtb_dev')
+      self%id = jobtype%turbomole 
+      self%rdgrad = .false.       
+      self%binary = 'gxtb'
+      self%rdwbo = .false.
+      if(index(levelstring,'_dev').ne.0)then
+        self%other = '-grad'
+        self%rdgrad=.true.
+      endif  
     case ('orca')
       self%id = jobtype%orca
 

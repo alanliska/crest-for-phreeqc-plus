@@ -40,6 +40,8 @@ module parse_maindata
   character(len=*),parameter,private :: fmturk = '("unrecognized KEYWORD in ",a," : ",a)'
   character(len=*),parameter,private :: fmtura = '("unrecognized ARGUMENT : ",a)'
 
+  external creststop
+
 !========================================================================================!
 !========================================================================================!
 contains   !> MODULE PROCEDURES START HERE
@@ -166,7 +168,7 @@ contains   !> MODULE PROCEDURES START HERE
         env%preopt = .false.
         env%crestver = crest_scanning
       case ('search_1')
-        env%preopt = .false.
+        env%preopt = .true.
         env%crestver = crest_s1
         env%runver = crest_s1
       case ('mecp','mecp_search')
@@ -174,7 +176,7 @@ contains   !> MODULE PROCEDURES START HERE
         env%crestver = crest_mecp
         env%runver = crest_mecp
       case ('imtd-gc')
-        env%preopt = .false.
+        env%preopt = .true.
         env%crestver = crest_imtd
         env%runver = 1
       case ('nci-mtd','nci')
@@ -183,7 +185,7 @@ contains   !> MODULE PROCEDURES START HERE
         env%autozsort = .false.
         env%performCross = .false.
         env%rotamermds = .false.
-      case ('entropy','imtd-stmd')
+      case ('entropy','imtd-smtd')
         env%crestver = crest_imtd  !> the entropy mode acts as subtype of the crest_imtd algo
         env%properties = abs(p_CREentropy)
         env%autozsort = .false.     !> turn off zsort (since we are not going to GC anyways)
@@ -201,7 +203,7 @@ contains   !> MODULE PROCEDURES START HERE
         env%crestver = crest_numhessian
         env%runver = crest_numhessian
       case ('rigidconf')
-        env%preopt = .false.
+        env%preopt = .true.
         env%crestver = crest_rigcon
         env%runver = crest_rigcon
 
@@ -209,16 +211,24 @@ contains   !> MODULE PROCEDURES START HERE
         env%properties = p_protonate
         env%crestver = crest_protonate
 
+      case ('deprotonate')
+        env%properties = p_deprotonate
+        env%crestver = crest_deprotonate
+
+      case ('tautomerize')
+        env%properties = p_tautomerize
+        env%crestver = crest_tautomerize
+
       case default
         !>--- keyword was recognized, but invalid argument supplied
         write (stdout,fmtura) val
-        error stop
+        call creststop(status_config)
 
       end select
     case ('ensemble_input','ensemble','input_ensemble')
       env%ensemblename = val
       env%inputcoords = val
-    case ('input','structure')
+    case ('input','structure','coord','coords')
       env%inputcoords = val
       call mol%open(val)
       call env%ref%load(mol)

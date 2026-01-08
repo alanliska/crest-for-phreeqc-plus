@@ -20,12 +20,11 @@ of the library in actual workflows than the low-level access provided in the
 CFFI generated wrappers.
 """
 
-from typing import Any, Optional
+from typing import Any, List, Optional, Union
 
 import numpy as np
-
 from . import library
-from .exceptions import TBLiteValueError
+from .exceptions import TBLiteRuntimeError, TBLiteValueError
 
 
 class Structure:
@@ -62,7 +61,7 @@ class Structure:
 
     def __init__(
         self,
-        numbers: np.ndarray,
+        numbers: Union[np.ndarray, List[int]],
         positions: np.ndarray,
         charge: Optional[float] = None,
         uhf: Optional[int] = None,
@@ -79,11 +78,16 @@ class Structure:
         TBLiteValueError
             on invalid input, like incorrect shape / type of the passed arrays
         """
+        if isinstance(numbers, list):
+            numbers = np.asarray(numbers)
+
         if positions.size % 3 != 0:
             raise TBLiteValueError("Expected tripels of cartesian coordinates")
 
         if 3 * numbers.size != positions.size:
-            raise TBLiteValueError("Dimension missmatch between numbers and positions")
+            raise TBLiteValueError(
+                "Dimension missmatch between numbers and positions"
+            )
 
         self._natoms = len(numbers)
         _numbers = np.ascontiguousarray(numbers, dtype="i4")
@@ -281,6 +285,7 @@ class Result:
          density-matrix         norb, norb [2, norb, norb]        e
          natoms                 scalar                            unitless
          norbitals              scalar                            unitless
+         post-processing-dict   dependes on the key               /
         ====================== ================================= ==============
 
         Notes
@@ -327,6 +332,32 @@ class Result:
 
         self._setter[attribute](self._res, value)
 
+    def save(self, filename: str) -> None:
+        """
+        Save the result container to a file. The format is compatible with the
+        npz format, which is used by the numpy library and can be read
+        by the numpy.load function.
+
+        Raises
+        ------
+        TBLiteRuntimeError
+            if the saving fails
+        """
+        library.save_wavefunction(self._res, filename)
+    
+    def load(self, filename: str) -> None:
+        """
+        Load a result container from a file. The format is compatible with the
+        npz format, which is used by the numpy library and can be written
+        by the numpy.savez function.
+
+        Raises
+        ------
+        TBLiteRuntimeError
+            if the loading fails
+        """
+        library.load_wavefunction(self._res, filename)
+
     def __getitem__(self, key: str) -> Any:
         return self.get(key)
 
@@ -343,7 +374,7 @@ class Result:
         for key in self._getter:
             try:
                 res[key] = self.get(key)
-            except RuntimeError:
+            except (TBLiteValueError, TBLiteRuntimeError):
                 pass
 
         return res
@@ -462,17 +493,22 @@ class Calculator(Structure):
         "electric-field": library.new_electric_field,
         "spin-polarization": library.new_spin_polarization,
         "alpb-solvation": library.new_alpb_solvation,
+        "gbsa-solvation": library.new_gbsa_solvation,
         "cpcm-solvation": library.new_cpcm_solvation,
+        "gbe-solvation": library.new_gbe_solvation,
+        "gb-solvation": library.new_gb_solvation,
     }
     _post_processing = {
         "bond-orders" : "bond-orders",
         "molecular-multipoles" : "molmom",
+        "xtbml" : "xtbml",
+        "xtbml_xyz" : "xtbml_xyz"
     }
 
     def __init__(
         self,
         method: str,
-        numbers: np.ndarray,
+        numbers: Union[np.ndarray, List[int]],
         positions: np.ndarray,
         charge: Optional[float] = None,
         uhf: Optional[int] = None,
@@ -488,7 +524,9 @@ class Calculator(Structure):
         TBLiteValueError
             on invalid input, like incorrect shape / type of the passed arrays
         """
-        Structure.__init__(self, numbers, positions, charge, uhf, lattice, periodic)
+        Structure.__init__(
+            self, numbers, positions, charge, uhf, lattice, periodic
+        )
 
         self._ctx = library.new_context(**context_kwargs)
         if method not in self._loader:
@@ -496,6 +534,7 @@ class Calculator(Structure):
                 f"Method '{method}' is not available for this calculator"
             )
         self._calc = self._loader[method](self._ctx, self._mol)
+        self._method = method
 
     def set(self, attribute: str, value) -> None:
         """
@@ -535,29 +574,50 @@ class Calculator(Structure):
         """
         Add an interaction to the calculator instance. Supported interactions are
 
-        =================== =========================== ===================
+        =================== =========================== =========================================
          name                description                 Arguments
-        =================== =========================== ===================
+        =================== =========================== =========================================
          electric-field      Uniform electric field      Field vector (3,)
          spin-polarization   Spin polarization           Scaling factor
-         alpb-solvation      ALPB implicit solvation     Epsilon or solvent
-         cpcm-solvation      CPCM implicit solvation     Epsilon or solvent
-        =================== =========================== ===================
+         alpb-solvation      ALPB implicit solvation     Solvent name, solution state (optional)
+         gbsa-solvation      GBSA implicit solvation     Solvent name, solution state (optional)
+         cpcm-solvation      CPCM implicit solvation     Epsilon
+         gbe-solvation       GBε implicit solvation      Epsilon, Born kernel
+         gb-solvation        GB implicit solvation       Epsilon, Born kernel
+        =================== =========================== =========================================
+
+        .. note::
+
+            For GSBA and ALPB:
+            For named solvents, uses parametrized GBSA/ALPB with CDS and empirical shift.
+            For unnamed solvents (dielectric constant), uses non-empirical GBSA/ALPB.
+            Optional solution state correction: gsolv (default), bar1mol, reference.
         """
 
         if interaction in self._interaction:
-            cont = self._interaction[interaction](self._ctx, self._mol, self._calc, *args)
+            kwargs = {}
+            if interaction in ("alpb-solvation", "gbsa-solvation"):
+                kwargs["version"] = {
+                    "GFN2-xTB": 2,
+                    "IPEA1-xTB": 1,
+                    "GFN1-xTB": 1,
+                }[self._method]
+            cont = self._interaction[interaction](
+                self._ctx, self._mol, self._calc, *args, **kwargs
+            )
             library.calculator_push_back(self._ctx, self._calc, cont)
         elif interaction in self._post_processing:
-            library.post_processing_push_back(self._ctx, self._calc, self._post_processing[interaction])
+            library.post_processing_push_back(
+                self._ctx, self._calc, self._post_processing[interaction]
+            )
         elif ".toml" in interaction:
-            library.post_processing_push_back(self._ctx, self._calc, self._post_processing[interaction])
+            library.post_processing_push_back(
+                self._ctx, self._calc, interaction
+            )
         else:
             raise TBLiteValueError(
                 f"Interaction or post processing '{interaction}' is not supported in this calculator"
             )
-
-
 
     def get(self, attribute: str) -> Any:
         """
@@ -582,8 +642,11 @@ class Calculator(Structure):
                 f"Attribute '{attribute}' is not supported in this calculator"
             )
         return self._getter[attribute](self._ctx, self._calc)
+        
 
-    def singlepoint(self, res: Optional[Result] = None, copy: bool = False) -> Result:
+    def singlepoint(
+        self, res: Optional[Result] = None, copy: bool = False
+    ) -> Result:
         """
         Perform actual single point calculation in the library backend.
         The output of the library will be forwarded to the standard output.
@@ -600,7 +663,6 @@ class Calculator(Structure):
 
         _res = Result(res) if copy or res is None else res
         library.get_singlepoint(self._ctx, self._mol, self._calc, _res._res)
-
         return _res
 
 
@@ -620,3 +682,35 @@ def _ref(ctype, value):
     ref = library.ffi.new(ctype + "*")
     ref[0] = value
     return ref
+
+
+# fmt: off
+ELEMENT_SYMBOLS = [
+    *["H", "He"],
+    *["Li", "Be", "B", "C", "N", "O", "F", "Ne"],
+    *["Na", "Mg", "Al", "Si", "P", "S", "Cl", "Ar"],
+    *["K", "Ca"],
+    *["Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn"],
+    *["Ga", "Ge", "As", "Se", "Br", "Kr"],
+    *["Rb", "Sr"],
+    *["Y", "Zr", "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag", "Cd"],
+    *["In", "Sn", "Sb", "Te", "I", "Xe"],
+    *["Cs", "Ba"],
+    *["La", "Ce", "Pr", "Nd", "Pm", "Sm", "Eu", "Gd", "Tb", "Dy", "Ho", "Er", "Tm", "Yb"],
+    *["Lu", "Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au", "Hg"],
+    *["Tl", "Pb", "Bi", "Po", "At", "Rn"],
+    *["Fr", "Ra"],
+    *["Ac", "Th", "Pa", "U", "Np", "Pu", "Am", "Cm", "Bk", "Cf", "Es", "Fm", "Md", "No"],
+    *["Lr", "Rf", "Db", "Sg", "Bh", "Hs", "Mt", "Ds", "Rg", "Cn"],
+    *["Nh", "Fl", "Mc", "Lv", "Ts", "Og"],
+]
+# fmt: on
+
+SYMBOL_TO_NUMBER = {
+    symbol: number + 1 for number, symbol in enumerate(ELEMENT_SYMBOLS)
+}
+
+
+def symbols_to_numbers(symbols: List[str]) -> List[int]:
+    """Convert a list of atomic symbols to atomic numbers."""
+    return [SYMBOL_TO_NUMBER[symbol] for symbol in symbols]

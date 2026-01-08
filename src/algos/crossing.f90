@@ -33,7 +33,7 @@ subroutine crest_crossing(env,maxgen,fname,maxpairs)
   implicit none
   !> INPUT
   type(systemdata),intent(inout) :: env
-  integer,intent(in)             :: maxgen
+  integer,intent(inout)          :: maxgen
   character(len=*),intent(in),optional   :: fname
   real(wp),intent(in),optional :: maxpairs
   !> LOCAL
@@ -69,6 +69,7 @@ subroutine crest_crossing(env,maxgen,fname,maxpairs)
   call rdensemble(ensnam,nat,nall,at,xyz,eread)
   if (nall .lt. 2) then
     write (stdout,*) 'Not enough structures to perform GC!'
+    maxgen=0
     return
   end if
 
@@ -122,7 +123,7 @@ subroutine crest_crossing(env,maxgen,fname,maxpairs)
 
   maxgen2 = maxgen
   call crossing(nat,nall,at,xyz,eread,ewin,rthr,cthr,maxgen2)
-
+  maxgen = maxgen2
 
   deallocate (eread,at,xyz)
 !========================================================================================!
@@ -371,6 +372,8 @@ subroutine crossing(nat,nall,at,xyz,er,ewin,rthr,cthr,maxgen)
     if (pr) then
       write (stdout,'(/,1x,i0,1x,a,/)') maxgen,'structures written to confcross.xyz'
     end if
+  else
+    maxgen = ntaken
   end if
 
   !>--- cleanup

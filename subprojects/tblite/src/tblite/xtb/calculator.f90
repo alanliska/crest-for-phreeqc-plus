@@ -80,6 +80,8 @@ module tblite_xtb_calculator
       logical :: save_integrals = .false.
       !> List of additional interaction containers
       type(container_list), allocatable :: interactions
+      !> string with method or "custom"
+      character(len=:), allocatable :: method
    contains
       !> Get information about density dependent quantities used in the energy
       procedure :: variable_info
@@ -151,6 +153,8 @@ subroutine new_xtb_calculator(calc, mol, param, error)
    call add_halogen(calc, mol, param, irc)
    call add_dispersion(calc, mol, param)
    call add_coulomb(calc, mol, param, irc)
+
+   calc%method = "custom"
 
 end subroutine new_xtb_calculator
 
@@ -438,7 +442,7 @@ function new_param_h0spec(mol, param, irc) result(self)
    !> Instance of the Hamiltonian specification
    type(param_h0spec) :: self
 
-   integer :: isp, jsp, il, jl, ir, ish
+   integer :: isp, il, ir, ish
    integer :: ang_idx(0:4)
 
    self%param => param
@@ -699,6 +703,5 @@ pure function info(self, verbosity, indent) result(str)
       str = str // nl // indent // self%interactions%info(verbosity, indent)
    end if
 end function info
-
 
 end module tblite_xtb_calculator

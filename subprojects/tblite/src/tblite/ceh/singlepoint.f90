@@ -32,7 +32,7 @@ module tblite_ceh_singlepoint
    & get_alpha_beta_occupation
    use tblite_wavefunction_mulliken, only: get_mulliken_shell_charges, &
    & get_mulliken_atomic_multipoles
-   use tblite_scf_iterator, only: get_density, get_qat_from_qsh
+   use tblite_scf_iterator, only: next_density, get_qat_from_qsh
    use tblite_scf, only: new_potential, potential_type 
    use tblite_container, only : container_cache
    use tblite_scf_potential, only: add_pot_to_h1
@@ -97,7 +97,7 @@ contains
       real(wp) :: nel, cutoff
       real(wp), allocatable :: tmp(:)
 
-      integer :: i, prlevel
+      integer :: prlevel
 
       ! coordination number related arrays
       real(wp), allocatable :: cn(:), dcndr(:, :, :), dcndL(:, :, :), cn_en(:), dcn_endr(:, :, :), dcn_endL(:, :, :)
@@ -164,7 +164,6 @@ contains
 
       ! Get Hamiltonian and integrals
       call new_integral(ints, calc%bas%nao)
-      ints%quadrupole = 0.0_wp
       call get_hamiltonian(mol, lattr, list, calc%bas, calc%h0, selfenergy, &
       & ints%overlap, ints%overlap_diat, ints%dipole, ints%hamiltonian)
       call timer%pop
@@ -180,26 +179,27 @@ contains
          call calc%interactions%get_potential(mol, icache, wfn, pot)
          call timer%pop
       endif
+
       ! Add potential due to Coulomb
       if (allocated(calc%coulomb)) then
          call timer%push("coulomb")
          ! Use electronegativity-weighted CN as 0th-order charge guess
-         call get_effective_qat(mol, calc%bas, cn_en, wfn%qat)
+         call get_effective_qat(mol, cn_en, wfn%qat)
       
          call calc%coulomb%update(mol, ccache)
          call calc%coulomb%get_potential(mol, ccache, wfn, pot)
          call timer%pop
       end if
 
-      ! Add effective Hamiltonian to wavefunction
+      ! Add effective Hamiltonian to potential
       call add_pot_to_h1(calc%bas, ints, pot, wfn%coeff)
 
       call timer%push("diagonalization")
       ! Solve the effective Hamiltonian
-      call ctx%new_solver(solver, calc%bas%nao)
+      call ctx%new_solver(solver, ints%overlap, wfn%nel, wfn%kt)
 
       ! Get the density matrix
-      call get_density(wfn, solver, ints, elec_entropy, error)
+      call next_density(wfn, solver, ints, elec_entropy, error)
       if (allocated(error)) then
          call ctx%set_error(error)
       end if
@@ -236,7 +236,6 @@ contains
             call ctx%message("")
          end if
       end block
-
 
    end subroutine ceh_singlepoint
 

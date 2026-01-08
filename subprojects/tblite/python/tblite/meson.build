@@ -21,6 +21,7 @@ python = pymod.find_installation(
   get_option('python_version'),
   modules: [
     'cffi',
+    'setuptools',
   ],
 )
 python_dep = python.dependency(required: true)
@@ -65,6 +66,7 @@ tblite_pyext = python.extension_module(
   dependencies: [tblite_dep, python_dep],
   install: install,
   subdir: 'tblite',
+  link_language: 'c',
 )
 
 if install
@@ -80,6 +82,7 @@ if install
       'test_interface.py',
       'test_library.py',
       'test_qcschema.py',
+      'py.typed',
     ),
     subdir: 'tblite',
     pure: false,

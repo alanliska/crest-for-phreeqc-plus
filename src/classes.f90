@@ -111,6 +111,16 @@ module crest_data
   integer,parameter,public :: p_useonly      = -227
   integer,parameter,public :: p_qcg          = 37
 
+!>--- exit status
+  integer,parameter,public :: status_normal = 0    !> success
+  integer,parameter,public :: status_error  = 1    !> general error
+  integer,parameter,public :: status_ioerr  = 2    !> general I/O error
+  integer,parameter,public :: status_args   = 4    !> invalid subroutine arguments 
+  integer,parameter,public :: status_input  = 10   !> Input file read error
+  integer,parameter,public :: status_config = 20   !> invalid configuration
+  integer,parameter,public :: status_failed = 155  !> general calculation failure
+  integer,parameter,public :: status_safety = 156  !> safety terminantion
+
 !>--- refinement levels (typically after multilevel opt.)
   type ,private:: refine_type
     integer :: non         = 0
@@ -307,6 +317,9 @@ module crest_data
 !========================================================================================!
 !>--- GENERAL data
   type :: systemdata
+
+    integer :: iostatus_meta = status_normal !> The overall program exit status
+
     integer :: crestver          !> Runtype-variable
     integer :: runver            !> additional runtype-variable
     integer :: properties        !> additional stuff before or after the confsearch
@@ -497,6 +510,8 @@ module crest_data
     !================================================!
 
     !>--- msreact mode settings
+    logical :: msei =.true. ! use the ei mode as default
+    logical :: mscid =.false. ! use the cid mode
     logical :: msnoiso =.false. ! print only dissociated structures in msreact
     logical :: msiso =.false. ! only print non-dissociated structures in msreact
     logical :: msmolbar =.false. ! sort out duplicates by molbar
@@ -538,6 +553,7 @@ module crest_data
     logical :: fullcre = .false.     !> calculate exact rotamer degeneracies
     logical :: gbsa                  !> use gbsa
     logical :: gcmultiopt            !> 2 level optimization for GC in V2
+    logical :: gradsp = .true.       !> turn on/off gradient calculation in singlepoint
     logical :: heavyrmsd = .false.   !> use only heavy atoms for RMSD in CREGEN?
     logical :: inplaceMode = .true.  !> in-place mode: optimization dirs are created "on-the-fly"
     logical :: iterativeV2           !> iterative version of V2 (= V3)

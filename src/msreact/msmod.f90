@@ -22,6 +22,7 @@ module msmod
   use crest_data
   use strucrd
   use iomod
+  use strucrd
   implicit none
 
   !>-- storage for a single mol
@@ -201,18 +202,16 @@ contains  !> MODULE PROCEDURES START HERE
 
   subroutine get_input_energy(env,etemp,etot)
 !******************************************************************************
-!* A quick xtb geometry optimization in xyz coordinates to get starting energy
+!* A quick xtb singlepoint calculation in xyz coordinates to get starting energy
 !******************************************************************************
     implicit none
     type(systemdata) :: env
     character(len=80) :: fname,pipe
     character(len=:),allocatable :: jobcall
     logical :: fin
-    character(len=256) :: atmp
-    integer :: ich,iost,io,i,T,Tn
+    character(len=256) :: atmp,chrg,uhf
+    integer :: ich,iost,io,i,T,Tn,nel
     type(coord) :: mol
-    integer :: ntopo
-    integer,allocatable :: topo(:)
     real(wp),intent(out) :: etot
     real(wp) :: etemp ! electronic temperature in K
     logical :: tchange = .false.
@@ -223,7 +222,7 @@ contains  !> MODULE PROCEDURES START HERE
 
 !---- small header
     write (*,*)
-    call smallhead('xTB Geometry Optimization')
+    call smallhead('xTB Singlepoint Calculation')
 !---- some options
     pipe = ' > xtb.out 2>/dev/null'
     call remove('gfnff_topo')
@@ -241,13 +240,27 @@ contains  !> MODULE PROCEDURES START HERE
 !---- input xyz file
     fname = env%inputcoords
 
+!---- Calculate the number of electrons from the input file
+    call readnel(fname,env%nat,nel)
+
+    ! Check parity - UHF and number of electrons should have same parity
+    if (mod(env%uhf, 2) /= mod((nel - env%chrg), 2)) then
+      write (*,*) 'Error: UHF and number of electrons must have the same parity (both odd or both even).'
+      write (*,'(A,I0,A,I0)') ' Number of electrons = ', nel - env%chrg, ', UHF = ', env%uhf
+      error stop
+    end if
+
 !    write (jobcall,'(a,1x,a,f10.4,1x,a,1x,a)') &
 !    &     trim(env%ProgName),trim(fname)//" --sp --etemp ",etemp,trim(env%gfnver),trim(pipe)
     jobcall = trim(env%ProgName)
     jobcall = trim(jobcall)//' '//trim(fname)
     write(atmp,'(f10.4)') etemp
     jobcall = trim(jobcall)//' --sp --etemp '//trim(atmp)
-    jobcall = trim(jobcall)//trim(env%gfnver)//trim(pipe)
+    jobcall = trim(jobcall)//' '//trim(env%gfnver)
+    write(chrg,'(i0)') env%chrg
+    write(uhf,'(i0)') env%uhf
+    jobcall = trim(jobcall)//' --chrg '//trim(chrg)//' --uhf '//trim(uhf)
+    jobcall = trim(jobcall)//trim(pipe)
 
     call execute_command_line(trim(jobcall),exitstat=io)
 
@@ -273,6 +286,90 @@ contains  !> MODULE PROCEDURES START HERE
     call remove('xtbrestart')
     call remove('gfnff_topo')
   end subroutine get_input_energy
+
+  subroutine get_wbo(env,etemp)
+    !******************************************************************************
+    !* A quick xtb wbo calculation at charge 0 to get WBO bond orders for the MSREACT mode
+    !******************************************************************************
+        implicit none
+        type(systemdata) :: env
+        character(len=80) :: fname,pipe
+        character(len=:),allocatable :: jobcall
+        logical :: fin
+        character(len=256) :: atmp,uhf_wbo,chrg
+        integer :: ich,iost,io,i,T,Tn,uhf
+        type(coord) :: mol
+        real(wp) :: etemp ! electronic temperature in K
+        logical :: tchange = .false.
+        logical :: ldum
+    
+    !---- setting threads
+        call new_ompautoset(env,'auto',1,T,Tn)
+    
+    !---- small header
+        write (*,*)
+        call smallhead('xTB WBO Calculation')
+    !---- some options
+        pipe = ' > xtb.out 2>/dev/null'
+        call remove('gfnff_topo')
+        if (.not.env%chargesfile) call remove('charges')
+        call remove('grad')
+        call remove('mos')
+        call remove('xtbopt.log')
+        call remove('xtbrestart')
+    
+       
+    !---- input xyz file
+        fname = env%inputcoords
+    
+    !    write (jobcall,'(a,1x,a,f10.4,1x,a,1x,a)') &
+    !    &     trim(env%ProgName),trim(fname)//" --sp --etemp ",etemp,trim(env%gfnver),trim(pipe)
+
+        !---- For the EI bond analysis the molecule has to be calculated in the neutral state. The GFN2 bond orders can be wrong after the ionization.
+        !---- For the CID bond analysis the molecule has to be calculated in the ionized state.
+        !---- calculating the remaining uhf for the wob calculation. Has to be modified when the CID mode is implemented.
+        !---- For EI the molecule is assumed to be in a low spin state and to be closed shell before ionization.
+        !---- For CID the molecule is assumed to be in a low spin state after the ionization.
+        if (env%msei) then
+          call getspin(env%nat,0,fname,uhf)
+          write (chrg,'(i0)') 0
+          write (uhf_wbo,'(i0)') uhf
+        elseif (env%mscid) then
+          write (chrg,'(i0)') env%chrg
+          write (uhf_wbo,'(i0)') env%uhf
+        end if
+
+        jobcall = trim(env%ProgName)
+        jobcall = trim(jobcall)//' '//trim(fname)
+        write(atmp,'(f10.4)') etemp
+        !always perform at charge 0
+        jobcall = trim(jobcall)//' --sp --chrg '//trim(chrg)//' --uhf '//trim(uhf_wbo)//' --etemp '//trim(atmp)
+        jobcall = trim(jobcall)//' '//trim(env%gfnver)//trim(pipe)
+    
+        call execute_command_line(trim(jobcall),exitstat=io)
+    
+        call minigrep('xtb.out','finished run',fin)
+        if (.not.fin) then
+          write (*,*)
+          write (*,*) ' Initial singlepoint calculation failed!'
+          write (*,*) ' Please check your input.'
+          error stop
+        end if
+        write (*,*) 'WBO successfully calculated.'
+    
+
+    !---- cleanup
+        call remove('xtb.out')
+        call remove('energy')
+        if (.not.env%chargesfile) call remove('charges')
+        call remove('grad')
+        call remove('mos')
+        call remove('xtbopt.log')
+        call remove('xtbtopo.mol')
+        call remove('.xtbopttok')
+        call remove('xtbrestart')
+        call remove('gfnff_topo')
+      end subroutine get_wbo
 
 !=======================================================================================!
 
@@ -303,8 +400,9 @@ contains  !> MODULE PROCEDURES START HERE
     do
       read (ich,'(a)',iostat=io) tmp
       if (index(tmp,'files:') .ne. 0) exit
-      if (index(tmp,'pi ') .ne. 0) nbaseat = nbaseat+2 ! count first two  atoms of pi or delpi bond with highest participation and ignore the rest
-      if (index(tmp,'LP ') .ne. 0) nbaseat = nbaseat+1 ! count LP
+      if (index(tmp,'pi ') .ne. 0 .and. tmp(76:76) .ne. ' ') nbaseat = nbaseat+2 ! count first two  atoms of pi or delpi bond with highest participation and ignore the rest
+      if (index(tmp,'LP ') .ne. 0 .or. (index(tmp,'pi ') .ne. 0 .and. tmp(76:76) .eq. ' ')) nbaseat = nbaseat+1 ! count LP
+      
     end do
     allocate (dumlist(nbaseat))
     dumlist = 0
@@ -314,19 +412,19 @@ contains  !> MODULE PROCEDURES START HERE
       read (ich,'(a)',iostat=io) tmp
       if (index(tmp,'starting deloc pi') .ne. 0) exit
       if (index(tmp,'files:') .ne. 0) exit
-      if (index(tmp,'pi ') .ne. 0) then
-        backspace (ich)
+      ! pi bond with at least one LMO located on each atom
+      if (index(tmp,'pi ') .ne. 0 .and. tmp(76:76) .ne. ' ') then
         if (tmp(64:64) == ' ') then ! if element symbol has one character, there is a space and we use this routine
           if (tmp(80:80) == ' ') then
-            read (ich,*) dumr,type,dumr,dumr,dumr,dumr,dumr,at1,dumc,dumc,dumr,at2,dumc,dumc,dumr ! first element has one and second has one character
+            read (tmp,*) dumr,type,dumr,dumr,dumr,dumr,dumr,at1,dumc,dumc,dumr,at2,dumc,dumc,dumr ! first element has one and second has one character
           else
-            read (ich,*) dumr,type,dumr,dumr,dumr,dumr,dumr,at1,dumc,dumc,dumr,at2,dumc,dumr ! first element has one and second has two character
+            read (tmp,*) dumr,type,dumr,dumr,dumr,dumr,dumr,at1,dumc,dumc,dumr,at2,dumc,dumr ! first element has one and second has two character
           end if
         else
           if (tmp(80:80) == ' ') then
-            read (ich,*) dumr,type,dumr,dumr,dumr,dumr,dumr,at1,dumc,dumr,at2,dumc,dumc,dumr  ! first element has two and second has pm character
+            read (tmp,*) dumr,type,dumr,dumr,dumr,dumr,dumr,at1,dumc,dumr,at2,dumc,dumc,dumr  ! first element has two and second has pm character
           else
-            read (ich,*) dumr,type,dumr,dumr,dumr,dumr,dumr,at1,dumc,dumr,at2,dumc,dumr ! first element has two and second has two character
+            read (tmp,*) dumr,type,dumr,dumr,dumr,dumr,dumr,at1,dumc,dumr,at2,dumc,dumr ! first element has two and second has two character
           end if
         end if
         if (findloc(dumlist,at1,1) .eq. 0) then
@@ -338,13 +436,12 @@ contains  !> MODULE PROCEDURES START HERE
           dumlist(j) = at2
         end if
       end if
-
-      if (index(tmp,'LP ') .ne. 0) then
-        backspace (ich)
+      ! Lone pair or pi bond with LMO located on only one atom 
+      if (index(tmp,'LP ') .ne. 0 .or. (index(tmp,'pi ') .ne. 0 .and. tmp(76:76) .eq. ' ')) then
         if (tmp(64:64) == ' ') then ! if element symbol has one character, there is a space and we use this routine
-          read (ich,*) dumr,type,dumr,dumr,dumr,dumr,dumr,at1,dumc,dumc,dumr
+          read (tmp,*) dumr,type,dumr,dumr,dumr,dumr,dumr,at1,dumc,dumc,dumr
         else ! if element symbol has two characters, there is no space and we use this routine
-          read (ich,*) dumr,type,dumr,dumr,dumr,dumr,dumr,at1,dumc,dumr
+          read (tmp,*) dumr,type,dumr,dumr,dumr,dumr,dumr,at1,dumc,dumr
         end if
         if (findloc(dumlist,at1,1) .eq. 0) then
           j = j+1
@@ -1144,6 +1241,48 @@ contains  !> MODULE PROCEDURES START HERE
     close (ich)
     return
   end subroutine wrplist
+
+subroutine readnel(fname,nat,nel)
+!********************************
+!* read number of electrons from file
+!********************************
+    implicit none
+    character(len=*) :: fname
+    integer :: nel,nat
+    integer :: i
+    integer,allocatable :: at(:)
+    real(wp),allocatable :: xyz(:,:)
+
+    allocate(at(nat),xyz(3,nat))
+    call rdcoord(fname,nat,at,xyz) ! Read coordinates from the file
+    nel = 0
+    do i = 1,nat
+      nel = nel + at(i)
+    end do
+  end subroutine readnel
+
+!*********************************
+!* get spin multiplicity from number of electrons
+!*********************************
+!> The number of unpaired electrons is calculated in a low spin state.
+  subroutine getspin(nat, chrg, fname, isp)
+    integer, intent(in) :: nat !> number of atoms
+    integer, intent(in) :: chrg !> total charge of the molecule
+    character(len=*), intent(in) :: fname !> file name for electron calculation
+    integer, intent(out) :: isp !> number of unpaired electrons
+    integer :: nel !> number of electrons
+
+    call readnel(fname, nat, nel) !> Read number of electrons from file
+    nel = nel - chrg !> number of electrons
+    
+    isp = mod(nel, 2)
+    if (nel < 1) then
+       ! if j < 1, we have an error in the number of electrons
+       ! This subroutine sets isp = -1 and prints an error message.
+       isp = -1
+       write(*,*) "Error: Invalid number of electrons (", nel, ") in getspin. Setting isp = -1."
+    end if
+  end subroutine getspin
 
 !=======================================================================================!
 !=======================================================================================!

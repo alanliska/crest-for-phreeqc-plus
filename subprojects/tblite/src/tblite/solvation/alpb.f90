@@ -27,7 +27,6 @@ module tblite_solvation_alpb
    use mctc_io_math, only : matdet_3x3
    use tblite_blas, only : dot, gemv, symv
    use tblite_container_cache, only : container_cache
-   use tblite_data_cm5, only : get_cm5_charges
    use tblite_mesh_lebedev, only : grid_size, get_angular_grid, list_bisection
    use tblite_scf_info, only : scf_info, atom_resolved
    use tblite_scf_potential, only : potential_type
@@ -35,6 +34,7 @@ module tblite_solvation_alpb
    use tblite_solvation_born, only : born_integrator, new_born_integrator
    use tblite_solvation_data, only : get_vdw_rad_cosmo
    use tblite_solvation_type, only : solvation_type
+   use tblite_solvation_cm5, only : get_cm5_charges
    implicit none
    private
 
@@ -70,16 +70,16 @@ module tblite_solvation_alpb
       integer :: kernel = born_kernel%p16
       !> Use analytical linearized Poisson-Boltzmann model
       logical :: alpb = .true.
-      !> Method for parameter selection
-      character(len=:), allocatable :: method
       !> Solvent for parameter selection
       character(len=:), allocatable :: solvent
-      !> xTB like solvation with empirical parameters
-      logical :: xtb = .false.
    end type alpb_input
 
+   !> Provide constructor for ALPB input
+   interface alpb_input
+      module procedure :: create_alpb_input
+   end interface alpb_input
 
-   !> Definition of polarizable continuum model
+   !> Definition of ALPB/GBSA model
    type, public, extends(solvation_type) :: alpb_solvation
       !> Dielectric function
       real(wp) :: keps
@@ -120,9 +120,9 @@ module tblite_solvation_alpb
       real(wp), allocatable :: rad(:)
       !> Derivatives of Born radii w.r.t. cartesian displacements
       real(wp), allocatable :: draddr(:, :, :)
-      !> scratch workspace for gradient construction
+      !> Scratch workspace for gradient construction
       real(wp), allocatable :: scratch(:)
-      !> workspace for atomic charges
+      !> Workspace for atomic charges
       real(wp), allocatable :: qscratch(:)
       !> CM5 charges (only required for GFN1 compatibility)
       real(wp), allocatable :: cm5(:)
@@ -142,16 +142,46 @@ module tblite_solvation_alpb
 contains
 
 
+!> Consturctor for ALPB input to properly assign allocatable strings
+function create_alpb_input(dielectric_const, solvent, alpb, kernel) result(self)
+   !> Dielectric constant
+   real(wp), intent(in) :: dielectric_const
+   !> Solvent for parameter selection
+   character(len=*), intent(in), optional :: solvent
+   !> Use analytical linearized Poisson-Boltzmann model
+   logical, intent(in), optional :: alpb
+   !> Interaction kernel
+   integer, intent(in), optional :: kernel
+
+   type(alpb_input) :: self
+
+   self%dielectric_const = dielectric_const
+
+   if (present(solvent)) then 
+      self%solvent = solvent
+   end if
+
+   if (present(alpb)) then 
+      self%alpb = alpb
+   end if
+
+   if (present(kernel)) then 
+      self%kernel = kernel
+   end if
+
+end function create_alpb_input
+
+
 !> Create new ALPB solvation model
-subroutine new_alpb(self, mol, input, error)
+subroutine new_alpb(self, mol, input, method)
    !> Instance of the solvation model
    type(alpb_solvation), intent(out) :: self
    !> Molecular structure data
    type(structure_type), intent(in) :: mol
    !> Input for ALPB solvation
    type(alpb_input), intent(in) :: input
-   !> Error handling
-   type(error_type), allocatable, intent(out) :: error
+   !> Method for parameter selection
+   character(len=*), intent(in), optional :: method
 
    real(wp), allocatable :: rvdw(:)
 
@@ -159,10 +189,8 @@ subroutine new_alpb(self, mol, input, error)
    self%alpbet = merge(alpha_alpb / input%dielectric_const, 0.0_wp, input%alpb)
    self%keps = (1.0_wp/input%dielectric_const - 1.0_wp) / (1.0_wp + self%alpbet)
    self%kernel = input%kernel
-   if (input%xtb .and. allocated(input%method))then
-     self%useCM5 = trim(input%method)=='gfn1'
-   else
-     self%useCM5 = .false.
+   if (allocated(input%solvent) .and. present(method)) then
+      self%useCM5 = trim(method) == 'gfn1'
    endif
 
    if (allocated(input%rvdw)) then
@@ -177,17 +205,17 @@ end subroutine new_alpb
 
 
 !> Type constructor for ALPB solvation
-function create_alpb(mol, input) result(self)
+function create_alpb(mol, input, method) result(self)
    !> Molecular structure data
    type(structure_type), intent(in) :: mol
    !> Input for ALPB solvation
    type(alpb_input), intent(in) :: input
+   !> Method for parameter selection
+   character(len=*), intent(in), optional :: method
    !> Instance of the solvation model
    type(alpb_solvation) :: self
 
-   type(error_type), allocatable :: error
-
-   call new_alpb(self, mol, input, error)
+   call new_alpb(self, mol, input, method)
 end function create_alpb
 
 
@@ -411,7 +439,7 @@ subroutine add_born_mat_p16(nat, xyz, keps, brad, Amat)
    real(wp), intent(inout) :: Amat(:, :)
 
    integer :: iat, jat
-   real(wp) :: r1, ab, arg, eab, fgb, dfgb, bp, vec(3)
+   real(wp) :: r1, ab, arg, fgb, dfgb, bp, vec(3)
 
    ! omp parallel do default(none) shared(Amat, ntpair, ppind, ddpair, brad, keps) &
    ! omp private(kk, iat, jat, r1, ab, arg, fgb, dfgb)
@@ -459,8 +487,8 @@ subroutine add_born_deriv_p16(nat, xyz, qat, keps, &
    !> Deriatives of Born solvation energy
    real(wp), contiguous, intent(inout) :: gradient(:, :)
 
-   integer :: iat, jat, kk
-   real(wp) :: vec(3), r2, r1, ab, arg1, arg16, qq, fgb, fgb2, dfgb, dfgb2, egb
+   integer :: iat, jat
+   real(wp) :: vec(3), r2, r1, ab, arg1, arg16, qq, fgb, dfgb, dfgb2, egb
    real(wp) :: dEdbri, dEdbrj, dG(3), ap, bp, dS(3, 3)
    real(wp), allocatable :: dEdbr(:)
 
@@ -539,13 +567,12 @@ pure subroutine add_born_mat_still(nat, xyz, keps, brad, Amat)
    !> Interaction matrix
    real(wp), intent(inout) :: Amat(:, :)
 
-   integer  :: i, j, nnj
-   integer  :: kk
+   integer  :: i, j
    real(wp), parameter :: a13=1.0_wp/3.0_wp
    real(wp), parameter :: a4=0.25_wp
    real(wp), parameter :: sqrt2pi = sqrt(2.0_wp/pi)
-   real(wp) :: aa, vec(3), r1, r2, gg, arg, bp
-   real(wp) :: dd, expd, fgb, fgb2, dfgb
+   real(wp) :: aa, vec(3), r1, r2, bp
+   real(wp) :: dd, expd, fgb2, dfgb
 
    do i = 1, nat
       do j = 1, i - 1
@@ -589,14 +616,11 @@ subroutine add_born_deriv_still(nat, xyz, qat, keps, &
    !> Deriatives of Born solvation energy
    real(wp), contiguous, intent(inout) :: gradient(:, :)
 
-   integer :: i, j, k, nnj
-   integer :: kk
+   integer :: i, j
    real(wp), parameter :: a13=1._wp/3._wp
    real(wp), parameter :: a4=0.25_wp
-   real(wp) :: aa, r2, fgb, fgb2, br3
-   real(wp) :: qq, dd, expd, dfgb, dfgb2, dfgb3, egb, ap, bp, qfg
-   real(wp) :: gg, expa
-   real(wp) :: r0vdw, r01, r02, ar02
+   real(wp) :: aa, r2, fgb2
+   real(wp) :: qq, dd, expd, dfgb, dfgb2, dfgb3, egb, ap, bp
    real(wp) :: grddbi, grddbj
    real(wp) :: dr(3), r1, vec(3)
    real(wp), allocatable :: grddb(:)
@@ -636,9 +660,7 @@ subroutine add_born_deriv_still(nat, xyz, qat, keps, &
          grddbi = brad(j)*bp
          grddbj = brad(i)*bp
          grddb(i) = grddb(i) + grddbi*qq
-         !gradient = gradient + brdr(:, :, i) * grddbi*qq
          grddb(j) = grddb(j) + grddbj*qq
-         !gradient = gradient + brdr(:, :, j) * grddbj*qq
 
       enddo
 
@@ -648,7 +670,6 @@ subroutine add_born_deriv_still(nat, xyz, qat, keps, &
       egb = egb + 0.5_wp*qat(i)*qq*keps
       grddbi = -0.5_wp*keps*qq*bp
       grddb(i) = grddb(i) + grddbi*qat(i)
-      !gradient = gradient + brdr(:, :, i) * grddbi*qat(i)
    enddo
 
    ! contract with the Born radii derivatives
